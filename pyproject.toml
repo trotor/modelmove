@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "modelmove"
+version = "0.1.0"
+description = "Tool for managing Ollama model storage"
+authors = ["tero@gmail.com"]
+readme = "README.md"  
+packages = [{include = "modelmove", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.scripts]
+modelmove = "modelmove.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api" 
