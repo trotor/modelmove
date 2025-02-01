@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import json
 from dataclasses import dataclass
 import subprocess
+import sys
 
 VERSION = "0.1.0"
 DEFAULT_OLLAMA_PATH = Path.home() / ".ollama" / "models"
@@ -179,56 +180,60 @@ class ModelManager:
             raise FileNotFoundError('\n'.join(error_msg))
         
         # If version is specified, verify it exists and get model details
-        if version:
-            manifest_file = source_dir / version
-            if not manifest_file.exists():
-                raise FileNotFoundError(f"Version '{version}' not found for model '{model_name}'")
-            
-            # Get model details to find all required files
-            model = self.get_model_details(source_dir)
-            if not model:
-                raise FileNotFoundError(f"Failed to read model details for '{model_name}'")
-            
-            # Create model directory in offload storage
-            model_offload_dir = self.offload_storage / f"{model_name}-{version}"
-            model_offload_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file = source_dir / version
+        if not manifest_file.exists():
+            raise FileNotFoundError(f"Version '{version}' not found for model '{model_name}'")
+        
+        # Get model details to find all required files
+        model = self.get_model_details(source_dir)
+        if not model:
+            raise FileNotFoundError(f"Failed to read model details for '{model_name}'")
+        
+        # Create model directory in offload storage
+        model_offload_dir = self.offload_storage / f"{model_name}-{version}"
+        model_offload_dir.mkdir(parents=True, exist_ok=True)
+        
+        if self.verbose:
+            print(f"\nMoving files to: {model_offload_dir}")
+            print(f"Found {len(model.required_files)} required files")
+        
+        # Move manifest file
+        if self.verbose:
+            print(f"\nMoving manifest file:")
+            print(f"  From: {manifest_file}")
+            print(f"  To: {model_offload_dir / version}")
+        shutil.move(manifest_file, model_offload_dir / version)
+        
+        # Move all required files from manifest
+        for file_info in model.required_files:
+            digest = file_info['digest']
+            blob_name = digest.replace(':', '-')
+            blob_path = self.ollama_blobs_path / blob_name
+            target_path = model_offload_dir / blob_name
             
             if self.verbose:
-                print(f"\nMoving files to: {model_offload_dir}")
-                print(f"Found {len(model.required_files)} required files")
+                print(f"\nMoving {file_info['type']}:")
+                print(f"  From: {blob_path}")
+                print(f"  To: {target_path}")
+                print(f"  Size: {file_info['size'] / (1024*1024):.1f} MB")
             
-            # Move manifest file
-            if self.verbose:
-                print(f"\nMoving manifest file:")
-                print(f"  From: {manifest_file}")
-                print(f"  To: {model_offload_dir / version}")
-            shutil.move(manifest_file, model_offload_dir / version)
-            
-            # Move all required files from manifest
-            for file_info in model.required_files:
-                digest = file_info['digest']
-                # Muuta digest-muoto samaksi kuin tiedostojärjestelmässä
-                blob_name = digest.replace(':', '-')  # sha256:abc -> sha256-abc
-                blob_path = self.ollama_blobs_path / blob_name
-                target_path = model_offload_dir / blob_name
-                
-                if self.verbose:
-                    print(f"\nMoving {file_info['type']}:")
-                    print(f"  From: {blob_path}")
-                    print(f"  To: {target_path}")
-                    print(f"  Size: {file_info['size'] / (1024*1024):.1f} MB")
-                
-                if blob_path.exists():
-                    shutil.move(str(blob_path), str(target_path))
-                else:
-                    print(f"Warning: Required file not found: {digest}")
-                    print(f"  Type: {file_info['type']}")
-                    print(f"  Expected path: {blob_path}")
-            
-            # Remove the now-empty model directory
+            if blob_path.exists():
+                shutil.move(str(blob_path), str(target_path))
+            else:
+                print(f"Warning: Required file not found: {digest}")
+                print(f"  Type: {file_info['type']}")
+                print(f"  Expected path: {blob_path}")
+        
+        # Check if the model directory is empty before removing it
+        remaining_files = list(source_dir.glob('*'))
+        if not remaining_files:  # Only remove if empty
             if self.verbose:
                 print("\nRemoving empty model directory...")
             shutil.rmtree(source_dir)
+        elif self.verbose:
+            print(f"\nKeeping model directory as it contains other versions:")
+            for f in remaining_files:
+                print(f"  - {f.name}")
 
     def move_to_main(self, model_name: str) -> None:
         """Move model from offload storage to main storage."""
@@ -271,9 +276,12 @@ class ModelManager:
                         print(f"\nMoving config blob:")
                         print(f"  From: {source_blob}")
                         print(f"  To: {target_blob}")
-                    # Ensure blobs directory exists
                     self.ollama_blobs_path.mkdir(parents=True, exist_ok=True)
-                    shutil.move(source_blob, target_blob)
+                    shutil.move(str(source_blob), str(target_blob))
+                else:
+                    print(f"Warning: Required blob not found: {digest}")
+                    print(f"  Type: config")
+                    print(f"  Expected path: {source_blob}")
             
             # Then all layer files
             for layer in manifest.get('layers', []):
@@ -288,9 +296,8 @@ class ModelManager:
                         print(f"  From: {source_blob}")
                         print(f"  To: {target_blob}")
                         print(f"  Size: {layer['size'] / (1024*1024):.1f} MB")
-                    # Ensure blobs directory exists
                     self.ollama_blobs_path.mkdir(parents=True, exist_ok=True)
-                    shutil.move(source_blob, target_blob)
+                    shutil.move(str(source_blob), str(target_blob))
                 else:
                     print(f"Warning: Required blob not found: {digest}")
                     print(f"  Type: {layer['mediaType']}")
@@ -301,22 +308,24 @@ class ModelManager:
             print("\nRemoving offload directory...")
         shutil.rmtree(source_dir)
 
-def load_config() -> tuple[Path, Path]:
-    """Load configuration from .env file or use defaults."""
-    # Try current directory first, then home directory
+def load_config():
     load_dotenv()
-    load_dotenv(Path.home() / ".env")
     
-    main_storage = Path(os.getenv("OLLAMA_PATH", DEFAULT_OLLAMA_PATH)).expanduser()
+    default_main = os.getenv('MAIN_PATH', str(DEFAULT_OLLAMA_PATH))  # Käytetään oletuspolkua jos MAIN_PATH puuttuu
+    default_offload = os.getenv('OFFLOAD_PATH')
     
-    # Make OFFLOAD_PATH mandatory
-    offload_path = os.getenv("OFFLOAD_PATH")
-    if not offload_path:
-        raise ValueError("OFFLOAD_PATH must be set in .env file")
-    
-    offload_storage = Path(offload_path).expanduser()
-    
-    return main_storage, offload_storage
+    if not default_offload:
+        print("\n❌ Configuration Error:")
+        print("   OFFLOAD_PATH is not set in your .env file")
+        print("\n📝 Quick Fix:")
+        print("   1. Create or edit .env file in your project root")
+        print("   2. Add the following line:")
+        print("      OFFLOAD_PATH=/path/to/your/offload/directory")
+        print("\n💡 Example:")
+        print("   OFFLOAD_PATH=/Users/username/ollama_models\n")
+        sys.exit(1)
+        
+    return default_main, default_offload
 
 def list_storage_contents(manager: ModelManager, verbose: bool = False) -> None:
     """Display contents of both storages."""
@@ -390,14 +399,12 @@ def main():
 
     args = parser.parse_args()
     
-    # Load defaults from .env file
-    default_main, default_offload = load_config()
-    
-    # Use command line parameters if given, otherwise use defaults
-    main_storage = Path(args.main_storage) if args.main_storage else default_main
-    offload_storage = Path(args.offload_storage) if args.offload_storage else default_offload
-    
     try:
+        default_main, default_offload = load_config()
+        # Use command line parameters if given, otherwise use defaults
+        main_storage = Path(args.main_storage) if args.main_storage else default_main
+        offload_storage = Path(args.offload_storage) if args.offload_storage else default_offload
+        
         manager = ModelManager(main_storage, offload_storage, args.verbose)
         
         if args.verbose:
@@ -441,11 +448,8 @@ def main():
             print("\nFull traceback:")
             traceback.print_exc()
     except Exception as e:
-        print(f"Error: {e}")
-        if args.verbose:
-            import traceback
-            print("\nFull traceback:")
-            traceback.print_exc()
+        print(f"\n❌ Error: {str(e)}\n")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main() 
