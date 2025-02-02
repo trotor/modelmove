@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import subprocess
 import sys
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 DEFAULT_OLLAMA_PATH = Path.home() / ".ollama" / "models"
 
 @dataclass
@@ -108,6 +108,13 @@ class ModelManager:
                         print(f"  Error reading {version_dir}: {e}")
         return None
 
+    def _format_display_name(self, dir_name: str) -> str:
+        """Convert directory name to display name (last - to :)"""
+        if '-' in dir_name:
+            last_dash_index = dir_name.rindex('-')
+            return dir_name[:last_dash_index] + ':' + dir_name[last_dash_index + 1:]
+        return dir_name
+
     def list_models(self) -> tuple[List[OllamaModel], List[str]]:
         """List models in both storages."""
         # For Ollama storage, look in the manifests/registry.ollama.ai/library directory
@@ -124,7 +131,9 @@ class ModelManager:
         if self.offload_storage.exists():
             for model_dir in self.offload_storage.iterdir():
                 if model_dir.is_dir() and not model_dir.name.startswith('.'):
-                    offload_models.append(model_dir.name)
+                    # Convert directory name to display name
+                    display_name = self._format_display_name(model_dir.name)
+                    offload_models.append(display_name)
         
         return main_models, offload_models
 
@@ -238,7 +247,9 @@ class ModelManager:
     def move_to_main(self, model_name: str) -> None:
         """Move model from offload storage to main storage."""
         model_name, version = self._parse_model_name(model_name)
-        source_dir = self.offload_storage / f"{model_name}-{version}"
+        # Convert display name to directory name for searching
+        dir_name = f"{model_name}-{version}"
+        source_dir = self.offload_storage / dir_name
         
         if not source_dir.exists():
             raise FileNotFoundError(f"Model '{model_name}' not found in offload storage")
@@ -309,10 +320,16 @@ class ModelManager:
         shutil.rmtree(source_dir)
 
 def load_config():
+    """Load configuration from .env file and expand paths"""
     load_dotenv()
     
-    default_main = os.getenv('MAIN_PATH', str(DEFAULT_OLLAMA_PATH))  # Käytetään oletuspolkua jos MAIN_PATH puuttuu
-    default_offload = os.getenv('OFFLOAD_PATH')
+    # Get paths from environment variables and expand them
+    default_main = os.path.expandvars(os.path.expanduser(
+        os.getenv('OLLAMA_PATH', str(DEFAULT_OLLAMA_PATH))
+    ))
+    default_offload = os.path.expandvars(os.path.expanduser(
+        os.getenv('OFFLOAD_PATH')
+    ))
     
     if not default_offload:
         print("\n❌ Configuration Error:")
@@ -322,9 +339,14 @@ def load_config():
         print("   2. Add the following line:")
         print("      OFFLOAD_PATH=/path/to/your/offload/directory")
         print("\n💡 Example:")
-        print("   OFFLOAD_PATH=/Users/username/ollama_models\n")
+        print("   OFFLOAD_PATH=$HOME/model_storage\n")
         sys.exit(1)
-        
+    
+    if os.getenv('VERBOSE', '').lower() in ('true', '1', 'yes'):
+        print(f"Loaded paths from .env:")
+        print(f"OLLAMA_PATH: {default_main}")
+        print(f"OFFLOAD_PATH: {default_offload}")
+    
     return default_main, default_offload
 
 def list_storage_contents(manager: ModelManager, verbose: bool = False) -> None:
@@ -351,7 +373,6 @@ def list_storage_contents(manager: ModelManager, verbose: bool = False) -> None:
                 if model_layer:
                     print(f"    Model blob: {model_layer['digest']}")
             else:
-                # Simple format for normal mode
                 print(f"  - {model.full_name} ({model.model_size:.1f} MB)")
     
     print("\nModels in offload storage:", end='')
@@ -359,20 +380,24 @@ def list_storage_contents(manager: ModelManager, verbose: bool = False) -> None:
         print(" (empty)")
     else:
         print()
-        for model_dir in sorted(offload_models):
-            model_path = manager.offload_storage / model_dir
-            # Lasketaan kaikkien tiedostojen koko
+        for display_name in sorted(offload_models):
+            # Convert display name back to directory name for path
+            dir_name = display_name.replace(':', '-')
+            model_path = manager.offload_storage / dir_name
+            
+            # Calculate total size of all files
             total_size = sum(f.stat().st_size for f in model_path.glob('*') if f.is_file())
             size_mb = total_size / (1024 * 1024)
+            
             if verbose:
-                print(f"  - {model_dir} ({size_mb:.1f} MB)")
-                # Näytä myös yksittäisten tiedostojen koot
+                print(f"  - {display_name} ({size_mb:.1f} MB)")
+                # Show individual file sizes
                 for f in model_path.glob('*'):
                     if f.is_file():
                         file_size_mb = f.stat().st_size / (1024 * 1024)
                         print(f"    - {f.name} ({file_size_mb:.1f} MB)")
             else:
-                print(f"  - {model_dir} ({size_mb:.1f} MB)")
+                print(f"  - {display_name} ({size_mb:.1f} MB)")
 
 def main():
     parser = argparse.ArgumentParser(description='Model storage management tool')
