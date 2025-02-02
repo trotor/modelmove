@@ -2,6 +2,15 @@
 
 ModelMove is a command-line tool for managing Ollama model storage. It allows you to move large language models between your main storage and an offload location, helping you manage disk space while keeping your models accessible.
 
+So why?
+- I bought a mac and I have only 256GB of storage. Internal storage is very fast.
+- Mac doesn't support USB 3.2 Gen2x2, so it is only 10Gbps.
+- If you have used mac, you know that it is very easy to fill up the storage and it really doesn't use external storage efficiently.
+- With this tool I can easily move not acutely needed models to external storage and free up some space. 
+
+USE AT YOUR OWN RISK, UNDERSTAND WHAT YOU ARE DOING.
+
+
 ## Features
 
 - Move models from Ollama storage to offload storage
